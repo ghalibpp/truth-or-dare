@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#ff4081">
+    <title>Truth or Dare with Voice Chat</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="icon.png">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        .game-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+        input, button {
+            margin: 10px;
+            padding: 10px;
+            font-size: 16px;
+        }
+        button {
+            background: #ff4081;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #playersList, #questionDisplay {
+            margin: 10px 0;
+        }
+        #questionDisplay {
+            font-weight: bold;
+            color: #ff4081;
+        }
+        #voiceStatus {
+            font-size: 14px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <h2>Truth or Dare with Voice Chat</h2>
+        <div id="joinSection">
+            <input type="text" id="playerName" placeholder="Enter your name">
+            <button onclick="joinGame()">Join Game</button>
+        </div>
+        <div id="gameSection" style="display: none;">
+            <p>Players: <span id="playersList"></span></p>
+            <p>Voice Status: <span id="voiceStatus">Initializing...</span></p>
+            <p>Current Turn: <span id="currentTurn">Waiting...</span></p>
+            <button id="truthBtn" onclick="chooseOption('Truth')" disabled>Truth</button>
+            <button id="dareBtn" onclick="chooseOption('Dare')" disabled>Dare</button>
+            <p id="questionDisplay">No question yet</p>
+        </div>
+    </div>
+
+    <script src="https://js.pusher.com/7.0/pusher.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <script>
+        // Pusher configuration (replace with your Pusher credentials)
+        const pusher = new Pusher('df42a3ed2d5e8913c4f7', {
+            cluster: 'df42a3ed2d5e8913c4f7ap2',
+            encrypted: true
+        });
+        const channel = pusher.subscribe('truth-or-dare');
+
+        // PeerJS for voice chat
+        const peer = new Peer({
+            host: '0.peerjs.com',
+            port: 443,
+            path: '/',
+            secure: true
+        });
+        let myStream = null;
+        let peerId = null;
+        let connections = [];
+
+        // Game state
+        let playerName = '';
+        let players = [];
+        let currentTurnIndex = 0;
+
+        // Questions list
+        const questions = {
+            Truth: [
+                "What’s the most embarrassing thing you’ve done in public?",
+                "Who do you secretly admire and why?",
+                "What’s a lie you’ve told that you regret?",
+                "What’s the weirdest food combo you’ve tried?",
+                "Have you ever cheated on a test or game?",
+                "What’s your biggest fear?",
+                "What’s something you’ve never told your best friend?"
+            ],
+            Dare: [
+                "Sing a song in a funny voice for 30 seconds.",
+                "Send a silly message to a random contact.",
+                "Do 15 jumping jacks right now.",
+                "Imitate another player’s laugh.",
+                "Post a funny selfie on your social media.",
+                "Speak in an accent for the next round.",
+                "Wear something ridiculous (e.g., socks on hands) for 2 minutes."
+            ]
+        };
+
+        // Initialize voice chat
+        peer.on('open', id => {
+            peerId = id;
+            document.getElementById('voiceStatus').textContent = 'Voice ready. Waiting for players...';
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    myStream = stream;
+                    document.getElementById('voiceStatus').textContent = 'Microphone active';
+                })
+                .catch(err => {
+                    document.getElementById('voiceStatus').textContent = 'Microphone access denied';
+                    console.error('Mic error:', err);
+                });
+        });
+
+        // Handle incoming voice calls
+        peer.on('call', call => {
+            call.answer(myStream);
+            call.on('stream', remoteStream => {
+                const audio = document.createElement('audio');
+                audio.srcObject = remoteStream;
+                audio.play();
+            });
+        });
+
+        // Join the game
+        function joinGame() {
+            playerName = document.getElementById('playerName').value.trim();
+            if (!playerName) {
+                alert('Please enter a name!');
+                return;
+            }
+            if (players.length >= 4) {
+                alert('Game is full (max 4 players)!');
+                return;
+            }
+            players.push({ name: playerName, peerId });
+            document.getElementById('joinSection').style.display = 'none';
+            document.getElementById('gameSection').style.display = 'block';
+            updatePlayersList();
+            broadcastGameState();
+            connectVoiceChat();
+            startGame();
+        }
+
+        // Connect to other players for voice chat
+        function connectVoiceChat() {
+            players.forEach(player => {
+                if (player.peerId && player.peerId !== peerId && !connections.includes(player.peerId)) {
+                    const call = peer.call(player.peerId, myStream);
+                    call.on('stream', remoteStream => {
+                        const audio = document.createElement('audio');
+                        audio.srcObject = remoteStream;
+                        audio.play();
+                    });
+                    connections.push(player.peerId);
+                }
+            });
+        }
+
+        // Update players list display
+        function updatePlayersList() {
+            document.getElementById('playersList').textContent = players.map(p => p.name).join(', ');
+        }
+
+        // Broadcast game state to all players
+        function broadcastGameState() {
+            channel.trigger('client-game-state', { players, currentTurnIndex });
+        }
+
+        // Start game and manage turns
+        function startGame() {
+            if (players.length >= 3) {
+                setTurn();
+            } else {
+                document.getElementById('currentTurn').textContent = 'Waiting for 3–4 players...';
+            }
+        }
+
+        // Set current player's turn
+        function setTurn() {
+            document.getElementById('currentTurn').textContent = players[currentTurnIndex].name;
+            const isMyTurn = playerName === players[currentTurnIndex].name;
+            document.getElementById('truthBtn').disabled = !isMyTurn;
+            document.getElementById('dareBtn').disabled = !isMyTurn;
+            document.getElementById('questionDisplay').textContent = 'Choose Truth or Dare!';
+        }
+
+        // Choose Truth or Dare
+        function chooseOption(type) {
+            const question = questions[type][Math.floor(Math.random() * questions[type].length)];
+            document.getElementById('questionDisplay').textContent = `${type}: ${question}`;
+            channel.trigger('client-question', { type, question, player: playerName });
+            nextTurn();
+        }
+
+        // Move to next turn
+        function nextTurn() {
+            currentTurnIndex = (currentTurnIndex + 1) % players.length;
+            broadcastGameState();
+            setTurn();
+        }
+
+        // Handle real-time question updates
+        channel.bind('client-question', data => {
+            document.getElementById('questionDisplay').textContent = `${data.type}: ${data.question} (by ${data.player})`;
+        });
+
+        // Handle game state updates
+        channel.bind('client-game-state', data => {
+            players = data.players;
+            currentTurnIndex = data.currentTurnIndex;
+            updatePlayersList();
+            connectVoiceChat();
+            startGame();
+        });
+
+        // PWA service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js')
+                .then(() => console.log('Service Worker Registered'))
+                .catch(err => console.error('Service Worker Error:', err));
+        }
+    </script>
+</body>
+</html>
